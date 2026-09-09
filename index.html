@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Year 7-2 AI</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#09101f;color:#fff;font-family:Arial,sans-serif;text-align:center}
+header{padding:16px;background:#151f3b}h1{margin:0;font-size:25px}.sub{color:#aab6d8;margin-top:5px}
+.wrap{max-width:900px;margin:auto;padding:12px}.camera{position:relative;background:#000;border-radius:18px;overflow:hidden;aspect-ratio:4/3}
+video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1)}
+#status{padding:14px;font-size:18px;font-weight:bold}.btn{border:0;border-radius:14px;padding:14px 24px;background:#6659f5;color:white;font-size:16px;font-weight:bold}
+.card{margin-top:14px;background:#182340;border-radius:15px;padding:15px;color:#d3dbf5;line-height:1.5}
+.good{color:#67f0a6}
+</style>
+</head>
+<body>
+<header><h1>🤖 Year 7-2 AI</h1><div class="sub">Face + Y Sign Detector</div></header>
+<div class="wrap">
+<div class="camera"><video id="video" autoplay playsinline muted></video><canvas id="canvas"></canvas></div>
+<div id="status">Tap Start Camera</div>
+<button class="btn" id="start">📷 Start Camera</button>
+<div class="card">
+Show the <b>ASL Y sign</b> ✋<br>
+The AI will say: <b>Hello, my name is Nur Syazarul</b>
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/face_detection.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466862/drawing_utils.js" crossorigin="anonymous"></script>
+
+<script>
+const video=document.getElementById("video");
+const canvas=document.getElementById("canvas");
+const ctx=canvas.getContext("2d");
+const status=document.getElementById("status");
+
+let stream=null, lastSpeech=0, yFrames=0, running=false;
+
+function d(a,b){
+ return Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z);
+}
+
+/*
+ More tolerant Y-sign detector:
+ thumb + pinky extended;
+ index + middle + ring curled.
+ Uses relative distances AND finger-tip/pip direction,
+ so it works better at different hand sizes/angles.
+*/
+function isY(l){
+ const w=l[0], thumb=l[4], index=l[8], middle=l[12], ring=l[16], pinky=l[20];
+
+ const thumbExtended =
+   d(thumb,w) > d(l[3],w)*1.05 &&
+   Math.abs(thumb.x-l[2].x) > 0.035;
+
+ const pinkyExtended =
+   d(pinky,w) > d(l[18],w)*1.05;
+
+ const indexCurled =
+   d(index,w) < d(l[6],w)*1.22 &&
+   d(index,l[5]) < d(l[6],w)*1.15;
+
+ const middleCurled =
+   d(middle,w) < d(l[10],w)*1.22 &&
+   d(middle,l[9]) < d(l[10],w)*1.15;
+
+ const ringCurled =
+   d(ring,w) < d(l[14],w)*1.22 &&
+   d(ring,l[13]) < d(l[14],w)*1.15;
+
+ return thumbExtended && pinkyExtended &&
+        indexCurled && middleCurled && ringCurled;
+}
+
+function speak(){
+ const now=Date.now();
+ if(now-lastSpeech<3500)return;
+ lastSpeech=now;
+ const u=new SpeechSynthesisUtterance(
+   "Hello, my name is Nur Syazarul"
+ );
+ u.rate=.9;
+ speechSynthesis.cancel();
+ speechSynthesis.speak(u);
+}
+
+const hands=new Hands({
+ locateFile:file=>"https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/"+file
+});
+hands.setOptions({
+ maxNumHands:2,
+ modelComplexity:1,
+ minDetectionConfidence:.5,
+ minTrackingConfidence:.5
+});
+
+const face=new FaceDetection({
+ locateFile:file=>"https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/"+file
+});
+face.setOptions({
+ model:"short",
+ minDetectionConfidence:.5
+});
+
+hands.onResults(results=>{
+ let yNow=false;
+
+ if(results.multiHandLandmarks){
+  for(const landmarks of results.multiHandLandmarks){
+   if(isY(landmarks)) yNow=true;
+
+   drawConnectors(ctx,landmarks,HAND_CONNECTIONS,{
+    color:"#00eaff",lineWidth:4
+   });
+   drawLandmarks(ctx,landmarks,{
+    color:"#ffffff",lineWidth:1,radius:3
+   });
+  }
+ }
+
+ // Require several consecutive frames to reduce false detections.
+ if(yNow) yFrames=Math.min(yFrames+1,12);
+ else yFrames=Math.max(yFrames-2,0);
+
+ if(yFrames>=5){
+  status.innerHTML='<span class="good">🟢 Y SIGN DETECTED!</span>';
+  speak();
+ }else{
+  status.textContent="Show the ASL Y sign ✋";
+ }
+});
+
+face.onResults(results=>{
+ if(results.detections){
+  for(const detection of results.detections){
+   const b=detection.boundingBox;
+   const x=b.xCenter*canvas.width;
+   const y=b.yCenter*canvas.height;
+   const w=b.width*canvas.width;
+   const h=b.height*canvas.height;
+
+   ctx.strokeStyle="#9b8cff";
+   ctx.lineWidth=4;
+   ctx.strokeRect(x-w/2,y-h/2,w,h);
+
+   ctx.fillStyle="#9b8cff";
+   ctx.font="bold 17px Arial";
+   ctx.fillText("FACE",x-w/2,y-h/2-8);
+  }
+ }
+});
+
+async function loop(){
+ if(!running)return;
+
+ canvas.width=video.videoWidth||640;
+ canvas.height=video.videoHeight||480;
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+
+ try{
+  await hands.send({image:video});
+  await face.send({image:video});
+ }catch(e){
+  console.error(e);
+ }
+
+ requestAnimationFrame(loop);
+}
+
+document.getElementById("start").onclick=async()=>{
+ try{
+  if(!window.isSecureContext){
+   status.textContent="❌ This page must use HTTPS.";
+   return;
+  }
+
+  stream=await navigator.mediaDevices.getUserMedia({
+   video:{facingMode:"user",width:{ideal:1280},height:{ideal:720}},
+   audio:false
+  });
+
+  video.srcObject=stream;
+  running=true;
+  status.textContent="🔵 Camera ON — show your Y sign";
+  loop();
+
+ }catch(error){
+  console.error(error);
+  status.textContent="❌ Camera permission was denied.";
+ }
+};
+</script>
+</body>
+</html>
