@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Home Object & Hand Speaker</title>
+<style>
+body{font-family:Arial,sans-serif;background:#111;color:#fff;text-align:center;margin:0;padding:20px}
+h1{margin:8px 0}.wrap{max-width:900px;margin:auto}
+#camera{position:relative;display:inline-block;width:min(100%,800px);background:#222;border-radius:16px;overflow:hidden}
+video,canvas{width:100%;display:block;transform:scaleX(-1)}
+canvas{position:absolute;inset:0}
+button{padding:12px 20px;border:0;border-radius:10px;font-size:16px;cursor:pointer;margin:8px}
+#status{font-size:18px;margin:12px}
+#spoken{font-size:24px;font-weight:bold;min-height:35px}
+small{color:#bbb}
+</style>
+<!-- TensorFlow.js + COCO-SSD -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+<!-- MediaPipe Hands -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+</head>
+<body>
+<div class="wrap">
+<h1>🏠 Home Object & Hand Speaker</h1>
+<p>Point the camera at an object, or show a hand sign.</p>
+<div id="camera">
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas"></canvas>
+</div>
+<br>
+<button id="start">Start Camera</button>
+<button id="stop">Stop</button>
+<div id="status">Press Start Camera.</div>
+<div id="spoken">Nothing detected yet.</div>
+<small>Object detection uses COCO-SSD. Hand signs are approximations based on finger positions, so lighting and camera angle can affect recognition.</small>
+</div>
+
+<script>
+const video=document.getElementById('video');
+const canvas=document.getElementById('canvas');
+const ctx=canvas.getContext('2d');
+const statusEl=document.getElementById('status');
+const spokenEl=document.getElementById('spoken');
+let stream=null, objectModel=null, hands=null, running=false;
+let lastObject="", lastObjectTime=0, lastSign="", lastSignTime=0;
+
+function speak(text){
+  if(!('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(text);
+  u.lang='en-US'; u.rate=.95;
+  speechSynthesis.speak(u);
+  spokenEl.textContent=text;
+}
+
+function distance(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
+
+// Approximate recognition of Y and C hand shapes.
+// This is not a full sign-language recognizer.
+function recognizeSign(lm){
+  const wrist=lm[0], thumb=lm[4], index=lm[8], middle=lm[12], ring=lm[16], pinky=lm[20];
+  const tips=[index,middle,ring,pinky];
+  const bases=[lm[5],lm[9],lm[13],lm[17]];
+  const extended=tips.map((t,i)=>distance(wrist,t)>distance(wrist,bases[i])*1.35);
+  const thumbOut=distance(wrist,thumb)>distance(wrist,lm[2])*1.15;
+
+  // Y: thumb + pinky extended, other fingers mostly folded
+  if(thumbOut && extended[3] && !extended[0] && !extended[1] && !extended[2]){
+    return "Y";
+  }
+
+  // C: fingers curved/open together; approximate using fingertip distances
+  const openCount=extended.filter(Boolean).length;
+  const fingerSpan=distance(index,pinky);
+  const palm=distance(lm[5],lm[17]);
+  const curvedShape = openCount>=2 && openCount<=4 && fingerSpan < palm*2.0;
+  if(curvedShape && thumbOut) return "C";
+
+  return "";
+}
+
+function onHandsResults(results){
+  if(!running)return;
+  canvas.width=video.videoWidth||640;
+  canvas.height=video.videoHeight||480;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  if(results.multiHandLandmarks && results.multiHandLandmarks.length){
+    const lm=results.multiHandLandmarks[0];
+    ctx.fillStyle="lime";
+    for(const p of lm){
+      ctx.beginPath();
+      ctx.arc(p.x*canvas.width,p.y*canvas.height,5,0,Math.PI*2);
+      ctx.fill();
+    }
+    const sign=recognizeSign(lm);
+    if(sign && (sign!==lastSign || Date.now()-lastSignTime>3500)){
+      lastSign=sign; lastSignTime=Date.now();
+      if(sign==="Y") speak("Hello My Name Is Nur Syazarul");
+      if(sign==="C") speak("Hello My Name Is Nur Aidan");
+      statusEl.textContent="Hand sign detected: "+sign;
+    }
+  }
+}
+
+async function detectObjects(){
+  if(!running || !objectModel) return;
+  try{
+    const predictions=await objectModel.detect(video);
+    if(predictions.length){
+      predictions.sort((a,b)=>b.score-a.score);
+      const p=predictions[0];
+      if(p.score>=0.60){
+        ctx.save();
+        ctx.scale(-1,1);
+        const x=-(p.bbox[0]+p.bbox[2]), y=p.bbox[1];
+        ctx.strokeStyle="red";ctx.lineWidth=3;
+        ctx.strokeRect(x,y,p.bbox[2],p.bbox[3]);
+        ctx.fillStyle="red";ctx.font="20px Arial";
+        ctx.fillText(p.class+" "+Math.round(p.score*100)+"%",x+5,Math.max(22,y+22));
+        ctx.restore();
+
+        if(p.class!==lastObject || Date.now()-lastObjectTime>5000){
+          lastObject=p.class; lastObjectTime=Date.now();
+          speak(p.class);
+          statusEl.textContent="Object detected: "+p.class;
+        }
+      }
+    }
+  }catch(e){console.error(e)}
+}
+
+async function loopObjects(){
+  while(running){
+    await detectObjects();
+    await new Promise(r=>setTimeout(r,1200));
+  }
+}
+
+document.getElementById('start').onclick=async()=>{
+  if(running)return;
+  try{
+    statusEl.textContent="Loading AI models...";
+    objectModel=await cocoSsd.load();
+    hands=new Hands({locateFile:(file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:.6,minTrackingConfidence:.6});
+    hands.onResults(onHandsResults);
+
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false});
+    video.srcObject=stream;
+    await video.play();
+    running=true;
+    statusEl.textContent="Camera running. Show Y or C, or point at an object.";
+    const camera=new Camera(video,{
+      onFrame:async()=>{if(running) await hands.send({image:video});},
+      width:640,height:480
+    });
+    camera.start();
+    loopObjects();
+  }catch(e){
+    console.error(e);
+    statusEl.textContent="Could not start camera: "+e.message;
+  }
+};
+
+document.getElementById('stop').onclick=()=>{
+  running=false;
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  video.srcObject=null;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  statusEl.textContent="Camera stopped.";
+};
+</script>
+</body>
+</html>
